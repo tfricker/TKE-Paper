@@ -1,0 +1,388 @@
+Kinetic Energy of Tornadoes in the United States
+================================================
+
+James B. Elsner & Tyler Fricker
+-------------------------------
+
+### Code in support of our paper in review with PLoS ONE.
+
+Set working directory and load packages.
+```{r}
+setwd("~/Dropbox/Tornadoes")
+library(ggplot2)
+library(ggmap)
+library(dplyr)
+library(rgdal)
+```
+
+NRC EF3 model
+```{r Fig1, dev='tiff', fig.width=6, fig.height=4}
+library(rgeos)
+EF0 = matrix(
+     c(0, 0, 200, 200, 0, 0, 50, 50, 0, 0),
+     nrow = 5,
+     ncol = 2)
+EF1 = matrix(
+     c(52.9, 52.9, 147.1, 147.1, 52.9, 13.225, 36.775, 36.775, 13.225, 13.225),
+     nrow = 5,
+     ncol = 2)
+EF2 = matrix(
+     c(80, 80, 120, 120, 80, 20, 30, 30, 20, 20),
+     nrow = 5,
+     ncol = 2)
+EF3 = matrix(
+     c(93.3, 93.3, 106.7, 106.7, 93.3, 23.325, 26.675, 26.675, 23.325, 23.325),
+     nrow = 5,
+     ncol = 2)
+p0 = Polygon(EF0)
+ps0 = Polygons(list(p0), 0)
+p1 = Polygon(EF1)
+ps1 = Polygons(list(p1), 1)
+p2 = Polygon(EF2)
+ps2 = Polygons(list(p2), 2)
+p3 = Polygon(EF3)
+ps3 = Polygons(list(p3), 3)
+spsNRC3 = SpatialPolygons(list(ps0, ps1, ps2, ps3))
+spsNRC3.df = fortify(spsNRC3)
+spsNRC3.df$EF = paste("EF", spsNRC3.df$id, sep = "")
+gArea(spsNRC3, byid = TRUE)
+
+library("wesanderson")
+pal = wes_palette(3, name = "Zissou")
+pal = c(grey(.75), pal)
+ggplot(spsNRC3.df, aes(x = long, y = lat, fill = EF)) +
+  geom_polygon() + 
+  coord_fixed() + 
+  xlab("") + ylab("") +
+  theme(panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank(), 
+        panel.background = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        strip.background = element_blank(),
+        legend.position = "right") +
+#  theme_tufte() +
+  scale_fill_manual(values = pal) +
+  theme(legend.title = element_blank()) 
+```
+
+### Tornado data
+
+Data from the Storm Prediction Center (SPC) http://www.spc.noaa.gov/gis/svrgis/.
+```{r, eval=FALSE}
+download.file("http://www.spc.noaa.gov/gis/svrgis/zipped/tornado.zip",
+              "tornado.zip", mode = "wb")
+unzip("tornado.zip")
+```
+
+Read the tornado data.
+```{r}
+TornL = readOGR(dsn = "torn", layer = "torn", 
+                stringsAsFactors = FALSE)
+TornL$OM = TornL$om
+TornL$Year = TornL$yr
+TornL$Month = TornL$mo
+TornL$EF = TornL$mag
+TornL$Date = as.Date(TornL$date)
+TornL$Length = TornL$len * 1609.34
+TornL$Width = TornL$wid * .9144
+TornL$FAT = TornL$fat
+TornL$SLON = TornL$slon
+TornL$SLAT = TornL$slat
+TornL$ELON = TornL$elon
+TornL$ELAT = TornL$elat
+TornL$INJ = TornL$inj
+TornL$LOSS = TornL$loss
+Torn.df = as.data.frame(TornL)
+#write.table(Torn.df, file = "Tornadoes.txt", row.names = FALSE)
+```
+
+### Total kinetic energy (TKE)
+
+```{r}
+Torn.df = Torn.df %>%
+  filter(Year >= 2007) %>%
+  mutate(Area = .5 * Length * .5 * Width * pi)
+dim(Torn.df)
+```
+
+Empirical model from Table 3-1 of NRC 2007. Percent area by EF rating for each EF category. Threshold wind speeds (m/s) are lower bound 3 sec gusts on the operational EF Scale (Table 2-1 of NRC2007). Area * 1000 = volume in cubic meters.
+```{r}
+perc = c(1, 0, 0, 0, 0, 0, 
+         .772, .228, 0, 0, 0, 0,
+         .616, .268, .115, 0, 0, 0,
+         .529, .271, .133, .067, 0, 0,
+         .543, .238, .131, .056, .032, 0,
+         .538, .223, .119, .07, .033, .017)
+percM = matrix(perc, ncol = 6, byrow = TRUE)
+```
+
+```{r}
+threshW = c(29.06, 38.45, 49.62, 60.8, 74.21, 89.41)
+midptW = c(diff(threshW)/2 + threshW[-length(threshW)], threshW[length(threshW)] + 7.5)
+midptW
+```
+
+```{r}
+ef = Torn.df$EF + 1
+EW2 = numeric()
+for(i in 1:length(ef)){
+  EW2[i] = midptW^2 %*% percM[ef[i], ]
+  }
+Torn.df = Torn.df %>%
+  mutate(TKE = .5 * EW2 * Area * 1000,
+         DPI = Area * (EF + 1),
+         TDI = (midptW[ef] * Width)^2)
+```
+
+For an individual tornado given length, width and max EF rating.
+```{r, eval=FALSE}
+Length = 28.7 * 1.61 * 1000
+Width = .5 * 1.61 * 1000
+Area = .5 * Length * .5 * Width * pi
+EF = 4
+ef = EF + 1
+EW2 = midptW^2 %*% percM[ef, ]
+TKE.FairdaleIL15 = as.vector(.5 * EW2 * Area * 1000)
+TKE.FairdaleIL15
+# 28.5 terajoules
+```
+
+```{r}
+xx = Torn.df %>%
+  filter(Date == "2013-05-20")
+# Moore OK 2013 32.1 terajoules
+
+xx = Torn.df %>%
+  filter(Date == "2013-05-31")
+# El Reno OK 2013 78.8 terajoules
+```
+
+```{r}
+summary(Torn.df$TKE)/10^9 # gigajoules
+goftest::ad.test(log10(Torn.df$TKE), 
+                 null = 'pnorm',
+                 mean = mean(log10(Torn.df$TKE)), 
+                 sd = sd(log10(Torn.df$TKE)))
+quantile(Torn.df$TKE/10^12, prob = c(.9, .95, .99))
+Torn.df[which.max(Torn.df$TKE), ]
+```
+Reject the null hypothesis of a lognormal distribution.
+
+Distribution of TKE
+```{r}
+library(scales)
+ggplot(Torn.df, aes(TKE)) +
+  geom_histogram(binwidth = .5, color = "white") +
+  scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),
+                     labels = trans_format("log10", math_format(10^.x))) +
+  xlab("Total Kinetic Energy (J)") +
+  ylab("Number of Tornadoes")
+```
+
+### Validation
+
+Compare with DPI and TDI
+```{r}
+Torn.df = Torn.df %>%
+  mutate(TKErank = length(TKE) - rank(TKE, ties.method = "min") + 1,
+         DPIrank = length(DPI) - rank(DPI, ties.method = "min") + 1,
+         TDIrank = length(TDI) - rank(TDI, ties.method = "min") + 1)
+cor.test(Torn.df$TKE, Torn.df$DPI, conf.level = .9)
+cor.test(Torn.df$TKE, Torn.df$TDI, conf.level = .9)
+cor.test(Torn.df$TKE[Torn.df$EF >= 2], Torn.df$DPI[Torn.df$EF >= 2], conf.level = .9)
+cor.test(Torn.df$TKE[Torn.df$EF >= 4], Torn.df$TDI[Torn.df$EF >= 4], conf.level = .9)
+cor.test(Torn.df$TKErank, Torn.df$DPIrank)
+cor.test(Torn.df$TKErank, Torn.df$TDIrank)
+df = tbl_df(Torn.df) %>%
+  select(Date, EF, TKE, DPI, TDI, TKErank, DPIrank, TDIrank) %>%
+  arrange(desc(TKE))
+df
+```
+
+Correlated with losses, injuries, fatalities
+```{r}
+cor.test(Torn.df$TKE, Torn.df$FAT, conf.level = .9)$estimate
+cor.test(Torn.df$TKE, Torn.df$FAT, conf.level = .9)$conf.int
+cor.test(Torn.df$DPI, Torn.df$FAT, conf.level = .9)$estimate
+cor.test(Torn.df$DPI, Torn.df$FAT, conf.level = .9)$conf.int
+cor.test(Torn.df$TDI, Torn.df$FAT, conf.level = .9)$estimate
+cor.test(Torn.df$TDI, Torn.df$FAT, conf.level = .9)$conf.int
+
+cor.test(Torn.df$TKE, Torn.df$INJ, conf.level = .9)$estimate
+cor.test(Torn.df$TKE, Torn.df$INJ, conf.level = .9)$conf.int
+cor.test(Torn.df$DPI, Torn.df$INJ, conf.level = .9)$estimate
+cor.test(Torn.df$DPI, Torn.df$INJ, conf.level = .9)$conf.int
+cor.test(Torn.df$TDI, Torn.df$INJ, conf.level = .9)$estimate
+cor.test(Torn.df$TDI, Torn.df$INJ, conf.level = .9)$conf.int
+
+cor.test(Torn.df$TKE, Torn.df$LOSS, conf.level = .9)$estimate
+cor.test(Torn.df$TKE, Torn.df$LOSS, conf.level = .9)$conf.int
+cor.test(Torn.df$DPI, Torn.df$LOSS, conf.level = .9)$estimate
+cor.test(Torn.df$DPI, Torn.df$LOSS, conf.level = .9)$conf.int
+cor.test(Torn.df$TDI, Torn.df$LOSS, conf.level = .9)$estimate
+cor.test(Torn.df$TDI, Torn.df$LOSS, conf.level = .9)$conf.int
+
+Torn.df %>%
+  group_by(EF) %>%
+  summarize(nT = n())
+```
+
+### Variation plots
+
+By EF category
+```{r}
+df = Torn.df %>%
+  group_by(EF) %>%
+  summarize(Count = n(),
+            TKEef = sum(TKE),
+            avgTKE = mean(TKE),
+            sd = sd(TKE),
+            se = sd/sqrt(Count),
+            ciMult = qt(.95/2 + .5, Count - 1),
+            ci = se * ciMult)
+
+ggplot(df, aes(x = factor(EF), y = avgTKE/10^12, fill = EF)) + 
+  geom_histogram(stat = "identity") + 
+  xlab("EF Category") + 
+  ylab("Average Kinetic Energy (TJ)") + 
+  scale_fill_continuous(low = "#fdd49e", high = "#990000", guide = "none") +
+  geom_errorbar(aes(ymin = (avgTKE - se)/10^12, 
+                    ymax = (avgTKE + se)/10^12), 
+                width = .1) +
+  geom_text(aes(label = Count, x = factor(EF), y = 0), 
+            data = df, 
+            vjust = 1.3, size = 4)
+```
+
+Top ten days by TKE
+```{r}
+df = Torn.df %>%
+  group_by(Date) %>%
+  summarize(Count = n(),
+            TKEdaily = sum(TKE)/10^12,
+            DPIdaily = sum(DPI),
+            TDIdaily = sum(TDI)) %>% # terajoules
+  mutate(TKEdailyRank = length(TKEdaily) - rank(TKEdaily, ties.method = "min") + 1,
+         DPIdailyRank = length(DPIdaily) - rank(DPIdaily, ties.method = "min") + 1,
+         TDIdailyRank = length(TDIdaily) - rank(TDIdaily, ties.method = "min") + 1) %>%
+  arrange(desc(TKEdaily))
+dim(df)
+df
+```
+
+```{r}
+library(ggthemes)
+library(wesanderson)
+pal = wes.palette(name = "Zissou", type = "continuous")
+top = 10
+df2 = df[1:top, ]
+or = order(df2$TKEdaily, decreasing = FALSE)
+df2$DateF = factor(df2$Date, levels = as.character(df2$Date[or]))
+ggplot(df2, aes(x = DateF, y = TKEdaily, fill = Count)) +
+  geom_histogram(stat = "identity") + 
+  coord_flip() + 
+  xlab("Date (Year-Month-Day)") + 
+  ylab("Total Kinetic Energy of U.S. Tornadoes (TJ)\nRanked by Day") + 
+  scale_fill_gradientn(colours = pal(3), name = "Number of\nTornadoes")
+```
+
+```{r}
+cor.test(df$TKEdaily, df$Count, conf.level = .9)
+df %>%
+  mutate(Eff = TKEdaily/Count) %>%
+  arrange(desc(Eff))
+```
+
+Cumulative daily aggregate energy by year
+```{r}
+df = Torn.df %>%
+  group_by(Year) %>%
+  mutate(TKEc = cumsum(TKE),
+         DoY = as.numeric(Date - as.Date(paste(Year, "-01-01", sep = ""))) + 1,
+         Date2 = as.POSIXct(as.Date(DoY, origin = "2015-01-01"))) %>%
+  select(Date2, Year, TKEc)
+df$Year = as.character(df$Year)
+
+ggplot(df, aes(x = Date2, y = TKEc/10^15, color = Year)) +
+  geom_line(size = 2, alpha = .75) +
+  scale_x_datetime(labels = date_format("%b"), breaks = date_breaks(width = "1 month")) +
+  xlab("") + ylab("Cumulative Tornado Energy (PJ)")
+```
+
+Monthly energy and frequency
+```{r}
+df = Torn.df %>%
+  group_by(Month) %>%
+  summarize(TKEm = sum(TKE),
+            Count = n()) %>%
+  mutate(Ma = factor(month.abb[Month], levels = month.abb[1:12]))
+
+pA = ggplot(df, aes(x = Ma, y = TKEm/10^12, fill = Count)) + 
+  geom_histogram(stat = "identity") + 
+  xlab("Month") + 
+  ylab("Kinetic Energy (TJ)") +
+  scale_fill_continuous(low = "#9ecae1", high = "#08519c", name = "Number of \nTornadoes")
+
+pB = ggplot(df, aes(x = Ma, y = Count, fill = TKEm/10^12)) + 
+  geom_histogram(stat = "identity") + 
+  xlab("Month") + 
+  ylab("Number of Tornadoes") +
+  scale_fill_continuous(low = "#9ecae1", high = "#08519c", name = "Kinetic\nEnergy (TJ)")
+
+source("multiplot.txt")
+mat = matrix(c(1, 2), nrow = 2, byrow = TRUE)
+pA = pA + ggtitle("a") + theme(plot.title = element_text(hjust = 0))
+pB = pB + ggtitle("b") + theme(plot.title = element_text(hjust = 0))              
+multiplot(pA, pB, layout = mat)
+```
+
+Yearly
+```{r}
+df = Torn.df %>%
+  group_by(Year) %>%
+  summarize(TKEy = sum(TKE),
+            Count = n())
+or = order(df$TKEy, decreasing = FALSE)
+df$YearF = factor(df$Year, levels = df$Year[or])
+ggplot(df, aes(x = YearF, y = TKEy/10^15, fill = Count)) + 
+  geom_histogram(stat = "identity") + 
+  coord_flip() + 
+  xlab("Year") + 
+  ylab("Kinetic Energy (PJ)\nRanked by Year") +
+  scale_fill_continuous(low = "#9ecae1", high = "#08519c", name = "Number of\nTornadoes")
+```
+
+By state
+```{r}
+df = Torn.df %>%
+  group_by(ST) %>%
+  summarize(Count = n(),
+            TKEst = sum(TKE),
+            TKEstpT = TKEst/Count) %>%
+  arrange(desc(TKEstpT))
+
+states.df = map_data("state") %>%
+  filter(region != 'alaska',  region != 'district of columbia') %>%
+  mutate(ST = state.abb[match(region, tolower(state.name))]) %>%
+  merge(df, by = "ST") %>%
+  arrange(order)
+
+ggplot(states.df, aes(x = long, y = lat, group = group, fill = log10(TKEst))) +
+  geom_polygon() +
+  geom_path(color = "gray75") +
+  coord_map(project = "polyconic") + 
+  theme(panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank(), 
+        panel.background = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        legend.position = "bottom") +
+#        labs(title = "Total Tornado Kinetic Energy\n [1994-2013]") + 
+        xlab("") + ylab("") +
+  scale_fill_continuous("Kinetic\nEnergy (J)", low = "red", high = "blue",
+                        breaks = 11:15, 
+                        labels = c(expression(10^11), expression(10^12),
+                                   expression(10^13), expression(10^14),
+                                   expression(10^15)))
+```
